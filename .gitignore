@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.aac-tools/
+.pytest_cache/
+# IDE state
+.idea/
+# Operator-authored configuration and local evidence/credentials.
+.local/
+pr-prep/
+
+.runs/
