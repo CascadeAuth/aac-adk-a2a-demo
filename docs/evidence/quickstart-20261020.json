@@ -1,0 +1,109 @@
+{
+  "schema": "aac-adk-a2a-demo.quickstart-run.v1",
+  "note": "The first live run of the example after sidecar v0.5.5 (B340) shipped. Per-step seconds are the cumulative times in the quickstart's step headings. No contact addresses, tenant ids, tokens or keys; token identifiers (root and leaf ids) are public chain identifiers, as in the execution graph.",
+  "date_utc": "2026-10-20",
+  "demo_commit_before_fix": "e3c1765a65cb940cd64243990925c486dce35dd6",
+  "components": {
+    "aac-cli": "0.2.13",
+    "sidecar": "v0.5.5 (docker.io/cascadeauth/aac-sidecar@sha256:ffafe07f12747b4dab0ab0d2479d37d7fb4dbe5391b0469881e4beff7c7aaf45)",
+    "publisher": "0.2.3 (ghcr.io/cascadeauth/aac-trust-anchor-publisher@sha256:f2a4f0a9a00af4d5962f985341076a37a42eeb5cc1b4250d10989638ffe58b56)",
+    "aac-invoke-auth": "0.1.2",
+    "google-adk": "2.12.0",
+    "litellm": "1.106.0"
+  },
+  "platform": {
+    "system": "macOS 26.7.1",
+    "machine": "arm64"
+  },
+  "versions": {
+    "python": "3.14.6",
+    "docker": "29.8.2",
+    "compose": "5.5.1",
+    "buildx": "v0.37.2",
+    "bash": "3.2.57"
+  },
+  "runs": [
+    {
+      "label": "first quickstart (registers two tenants)",
+      "tenants_registered": 2,
+      "sign_ins": 4,
+      "cumulative_seconds": {
+        "step 2 register": 38,
+        "step 3 trust": 393,
+        "step 4 start and run": 395
+      },
+      "result": "failed at ./demo up: the trip-planner client service combined extra_hosts with network_mode: service:agent and Docker refused the container (conflicting options: custom host-to-IP mapping and the network mode); both tenants, their trust publication and all six containers were already up"
+    },
+    {
+      "label": "rerun after the fix (reuses both registrations)",
+      "tenants_registered": 0,
+      "sign_ins": 0,
+      "cumulative_seconds": {
+        "step 2 register": 2,
+        "step 3 trust": 3,
+        "step 4 start and run": 4,
+        "graph": 19,
+        "total": 21
+      },
+      "result": "Quickstart demo completed successfully; graph rendered with 3 observed tokens"
+    }
+  ],
+  "scenarios": [
+    {
+      "scenario": "reservation",
+      "task_ref": "po4143-9fb042ad9112",
+      "root_token_id": "e543c7a0f87dadab2adaecc78cadb6561ef1a33ec0ccb282341f71fac609b83d",
+      "decision": "settle",
+      "reply": "Reservation synthetic-po4143-9fb042ad9112 held for PO #4143, Austin to Shanghai on 12 May, $8,000, unpaid.",
+      "chain_rows": {
+        "mint": {
+          "hop_index": 1,
+          "parent_is_root": true,
+          "latency_ms": 0.152
+        },
+        "dispatch": {
+          "hop_index": 2,
+          "parent_is_mint_token": true,
+          "destination": "tourfedia",
+          "latency_ms": 41.194
+        },
+        "receive": {
+          "hop_index": 2,
+          "token_is_dispatched_token": true,
+          "latency_ms": 38.141
+        },
+        "action_taken": "settle"
+      },
+      "caveat_predicates_at_booking": "action:reserve_travel,amount_max:8000,originator_reference:PO #4143,task_ref:po4143-9fb042ad9112,valid_until:1792542165"
+    },
+    {
+      "scenario": "fare-change",
+      "task_ref": "po4143-10ab295bf308",
+      "root_token_id": "d68bd5b539b0dcb8caecfb112d036e724d2ab01fcedcc394bb62d83c9eee4392",
+      "decision": "refuse",
+      "reason": "The fare is now $9,500, above the $8,000 I may spend.",
+      "reply": "No reservation: The fare is now $9,500, above the $8,000 I may spend.",
+      "chain_rows": {
+        "mint": {
+          "hop_index": 1
+        },
+        "dispatch": {
+          "hop_index": 2,
+          "parent_is_mint_token": true
+        },
+        "receive": {
+          "hop_index": 2,
+          "token_is_dispatched_token": true
+        },
+        "action_taken": "refuse"
+      }
+    }
+  ],
+  "tests": {
+    "offline": "62 passed (python -m pytest tests -q --ignore tests/live)",
+    "live": "2 passed (AAC_DEMO_LIVE=1 python -m pytest tests/live -q): the run ends with correlated evidence for each scenario"
+  },
+  "findings_fixed": [
+    "compose.yaml: the client service's extra_hosts line removed; a container that shares another's network namespace also shares its hosts file, and Docker refuses extra_hosts together with network_mode: service. tests/test_compose.py pins the agent's mapping and the client's absence of one."
+  ]
+}
