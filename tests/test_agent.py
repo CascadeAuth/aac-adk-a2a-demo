@@ -6,7 +6,7 @@ import json
 import httpx
 import pytest
 import sidecar_rules
-from aac_invoke_auth import sign_invoke_request
+from aac_invoke_auth import sign_invoke_request, verify_invoke_request
 from conftest import SECRET
 from starlette.testclient import TestClient
 
@@ -91,10 +91,11 @@ def test_without_the_interceptor_adks_history_would_be_refused(agent_module, age
 
 
 def fake_sidecar(posted, status=200, reply_text="Reservation synthetic-x held for PO #4143."):
-    def post(url, headers, content, timeout):
-        posted.update(url=url, headers=headers, envelope=json.loads(content), timeout=timeout)
+    def post(url, headers, content, timeout, trust_env=True):
+        posted.update(url=url, headers=headers, body=content, envelope=json.loads(content), timeout=timeout, trust_env=trust_env)
         if status != 200:
-            return httpx.Response(status, json={"code": "ERR_DESTINATION_NOT_FOUND", "message": "no such destination"})
+            return httpx.Response(status, json={"error": {"code": "ERR_DESTINATION_NOT_FOUND", "message": "no such destination",
+                                                          "detail": None, "request_id": "r-1"}})
         envelope = posted["envelope"]
         reply = {"jsonrpc": "2.0", "id": envelope["a2a_request"]["id"], "result": {"message": {
             "messageId": "r-1", "contextId": envelope["task_ref"], "role": "ROLE_AGENT", "parts": [{"text": reply_text}]}}}
@@ -106,9 +107,13 @@ def test_trip_planner_asks_its_sidecar_with_the_orders_limits(agent_module, agen
     posted = {}
     monkeypatch.setattr(agent_module.httpx, "post", fake_sidecar(posted))
     client = importlib.import_module("client")
-    result = asyncio.run(client.ask_trip_planner("reservation"))
-    assert posted["url"] == "http://127.0.0.1:8080/v1/agent/a2a/dispatch"
-    assert posted["headers"]["X-AAC-Envelope-Schema"] == "aac.a2a.egress.v1" and "X-AAC-Invoke-Signature" in posted["headers"]
+    result, requested = asyncio.run(client.ask_trip_planner("reservation"))
+    assert posted["url"] == "http://127.0.0.1:8080/v1/agent/a2a/dispatch" and posted["trust_env"] is False
+    assert posted["headers"]["X-AAC-Envelope-Schema"] == "aac.a2a.egress.v1"
+    # The signature the sidecar will check: over these headers and exactly these bytes.
+    assert verify_invoke_request(secret=SECRET, method="POST", path="/v1/agent/a2a/dispatch",
+                                 headers=posted["headers"], body=posted["body"]) is None
+    assert requested["amount"] == 8000
     envelope = posted["envelope"]
     assert envelope["schema_version"] == "aac.a2a.egress.v1" and envelope["destination_profile"] == "tourfedia"
     assert envelope["authority"]["mode"] == "originate" and envelope["authority"]["class_of_action"] == "reserve_travel"
@@ -127,9 +132,19 @@ def test_trip_planner_asks_its_sidecar_with_the_orders_limits(agent_module, agen
 def test_trip_planner_reports_a_refused_dispatch(agent_module, agent_env, monkeypatch):
     monkeypatch.setattr(agent_module.httpx, "post", fake_sidecar({}, status=404))
     client = importlib.import_module("client")
-    result = asyncio.run(client.ask_trip_planner("reservation"))
-    assert result["status"] == "refused" and result["sidecar_error"]["code"] == "ERR_DESTINATION_NOT_FOUND"
+    result, _ = asyncio.run(client.ask_trip_planner("reservation"))
+    assert result["status"] == "refused" and result["sidecar_error"]["error"]["code"] == "ERR_DESTINATION_NOT_FOUND"
     assert result["summary"] == "My sidecar refused to send the request: ERR_DESTINATION_NOT_FOUND, no such destination."
+
+
+def test_the_rules_copy_refuses_credential_shaped_values_like_the_sidecar():
+    reply = {"jsonrpc": "2.0", "id": TASK, "result": {"message": {"messageId": "r", "contextId": "c", "role": "ROLE_AGENT",
+                                                                  "parts": [{"text": "ok"}]}}}
+    assert sidecar_rules.check_reply(reply, TASK) == "message"
+    for smuggled in ({"metadata": {"X-AAC-Task-Ref": "t"}}, {"metadata": {"note": "Bearer abcdefghijklmnopqrstuvwxyz"}},
+                     {"metadata": {"note": "AAC-Macaroon abc"}}):
+        with pytest.raises(AssertionError, match="credential-shaped"):
+            sidecar_rules.check_reply({**reply, **smuggled}, TASK)
 
 
 def test_reply_text_reads_messages_tasks_and_errors(agent_module):

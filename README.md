@@ -393,8 +393,12 @@ export GOOGLE_API_KEY=your-key
 ```
 
 Any other model ADK reaches through its LiteLLM extension works the same
-way; a name with a slash selects that route. For a model served by Ollama on
-your machine, point the containers at it:
+way; a name with a slash selects that route. The `x-model` block at the top of
+[compose.yaml](compose.yaml) passes exactly these settings into the containers:
+`AAC_DEMO_MODEL`, `GOOGLE_API_KEY` and `OLLAMA_API_BASE`. A provider that needs
+another key is added there. For a model served by Ollama on your machine,
+point the containers at it; the Compose file maps `host.docker.internal` to
+your machine on Linux as well as on Docker Desktop:
 
 ```sh
 export AAC_DEMO_MODEL=ollama_chat/llama3.1
@@ -407,7 +411,8 @@ Unset `AAC_DEMO_MODEL` and run `./demo up` again to return to the script. The
 model never sees a key, token or proof: the tools talk to the sidecars, and a
 model that calls the tool with a different amount changes only what Vantis's
 sidecar allows Tourfedia to spend. Model output varies, so the client checks
-the evidence, not the sentences.
+the evidence, not the sentences: the amount the model asked the tool for must
+be the limit on the authority and the amount held, whatever the sentences say.
 
 ## 6. Refresh, renew and restart
 

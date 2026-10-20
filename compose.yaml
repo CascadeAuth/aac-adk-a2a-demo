@@ -30,6 +30,8 @@ services:
     networks:
       peers:
         aliases: ["${AAC_DEMO_ROLE:?}"]
+    # Lets a model served on this machine (README section 5) be reached as host.docker.internal on Linux too.
+    extra_hosts: ["host.docker.internal:host-gateway"]
 
   sidecar:
     image: ${AAC_DEMO_SIDECAR_IMAGE:?Run ./demo prepare}
@@ -73,11 +75,12 @@ services:
       <<: *model
       AAC_DEMO_ROLE: ${AAC_DEMO_ROLE:?}
       AAC_INVOKE_AUTH_SECRET_FILE: /run/secrets/pairing.secret
-      AAC_DEMO_BOOKING_ID: ${AAC_DEMO_BOOKING_ID:-}
+      AAC_DEMO_BOOKING_ID: ${AAC_DEMO_BOOKING_ID:?}
     volumes:
       - {type: bind, source: "${AAC_AGENT_SHARED_DIR:?}", target: /run/secrets, read_only: true}
       - {type: bind, source: "${AAC_DEMO_VANTIS_STATE:?}", target: /evidence/vantis, read_only: true}
       - {type: bind, source: "${AAC_DEMO_TOURFEDIA_STATE:?}", target: /evidence/tourfedia, read_only: true}
+    extra_hosts: ["host.docker.internal:host-gateway"]
     entrypoint: ["python", "client.py"]
 
 networks:

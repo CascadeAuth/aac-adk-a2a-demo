@@ -17,7 +17,8 @@ def test_independent_mounts_a2a_and_runtime(synthetic_home, agent):
     env = {**os.environ, **components.compose_values(components.selected(REPO)),
            "AAC_DEMO_ROLE": agent, "AAC_DEMO_UID": "4242", "AAC_DEMO_GID": "4243",
            "AAC_DEMO_VANTIS_STATE": str(synthetic_home / "agents/trip-planner/state"),
-           "AAC_DEMO_TOURFEDIA_STATE": str(synthetic_home / "agents/booking/state")}
+           "AAC_DEMO_TOURFEDIA_STATE": str(synthetic_home / "agents/booking/state"),
+           "AAC_DEMO_BOOKING_ID": "spiffe://tourfedia.example/booking"}
     env.pop("AAC_DEMO_MODEL", None)
     folder = synthetic_home / "agents" / agent
     result = subprocess.run(["docker", "compose", "--env-file", str(folder / "compose.env"),
@@ -40,6 +41,11 @@ def test_independent_mounts_a2a_and_runtime(synthetic_home, agent):
         mounts = {m["target"]: m["source"] for m in services[name]["volumes"]}
         assert mounts["/run/secrets"] == str(folder / "agent")
         assert not any("/sidecar" in source for source in mounts.values())
+    client = {m["target"]: m for m in services["client"]["volumes"]}
+    assert client["/evidence/vantis"]["source"] == env["AAC_DEMO_VANTIS_STATE"] and client["/evidence/vantis"]["read_only"]
+    assert client["/evidence/tourfedia"]["source"] == env["AAC_DEMO_TOURFEDIA_STATE"] and client["/evidence/tourfedia"]["read_only"]
+    assert services["client"]["environment"]["AAC_DEMO_BOOKING_ID"] == env["AAC_DEMO_BOOKING_ID"]
+    assert services["agent"]["extra_hosts"] == services["client"]["extra_hosts"] == ["host.docker.internal=host-gateway"]
     sidecar = {m["target"]: m for m in services["sidecar"]["volumes"]}
     assert sidecar["/etc/aac/pki"]["source"] == str(folder / "sidecar")
     assert sidecar["/etc/aac/pki"]["read_only"]

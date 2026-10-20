@@ -27,7 +27,7 @@ def evidence(scenario="reservation"):
                 "caveat_predicates": f"action:reserve_travel,amount_max:8000,originator_reference:PO #4143,task_ref:{TASK},valid_until:{int(time.time()) + 1800}"}
     receive = {"event_type": "receive", **common, "token_id": TOKEN, "actor_spiffe_id": BOOKING}
     action = {"token_id": TOKEN, "action_payload": {"task_ref": TASK, "decision": decision["action"], "agent_decision": decision}}
-    return [acknowledged, mint, dispatch, receive, action, BOOKING, scenario]
+    return [acknowledged, mint, dispatch, receive, action, BOOKING, scenario, 8000]
 
 
 def test_correlated_result(client_module):
@@ -59,11 +59,17 @@ def test_a_reply_that_does_not_match_the_record_is_not_success(client_module):
         client_module.verify_result(*args)
 
 
+def test_the_amount_the_model_asked_for_is_the_limit_checked(client_module):
+    args = evidence()
+    with pytest.raises(AssertionError):
+        client_module.verify_result(*args[:-1], 7000)
+
+
 def test_waits_for_the_chain_and_fails_without_it(client_module, monkeypatch, capsys):
     acknowledged = evidence()[0]
 
     async def acknowledged_only(scenario):
-        return acknowledged
+        return acknowledged, {"amount": 8000}
 
     monkeypatch.setattr(client_module, "ask_trip_planner", acknowledged_only)
     monkeypatch.setattr(client_module, "matching", lambda *_: [])
@@ -73,6 +79,15 @@ def test_waits_for_the_chain_and_fails_without_it(client_module, monkeypatch, ca
     with pytest.raises(RuntimeError, match="No complete chain evidence for task po4143-test"):
         client_module.run("reservation")
     assert '"simulated_approval"' in capsys.readouterr().out
+
+
+def test_a_refused_dispatch_ends_the_run_with_the_sidecars_answer(client_module, monkeypatch):
+    async def refused(scenario):
+        return {"task_ref": TASK, "status": "refused", "sidecar_error": {"error": {"code": "ERR_DESTINATION_NOT_FOUND"}}}, {"amount": 8000}
+
+    monkeypatch.setattr(client_module, "ask_trip_planner", refused)
+    with pytest.raises(SystemExit, match="ERR_DESTINATION_NOT_FOUND"):
+        client_module.run("reservation")
 
 
 def test_matching_reads_rows_for_the_task_only(client_module, tmp_path):

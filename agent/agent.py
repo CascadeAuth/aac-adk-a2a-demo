@@ -34,7 +34,7 @@ def model(tool: str):
     name = os.environ.get("AAC_DEMO_MODEL", "")
     if not name:
         return ScriptedModel(tool=tool)
-    if "/" in name:  # a LiteLLM name such as ollama_chat/llama3.1 or openai/gpt-4o
+    if "/" in name:  # a LiteLLM name such as ollama_chat/llama3.1
         from google.adk.models.lite_llm import LiteLlm
         return LiteLlm(model=name)
     return name  # a Gemini model name; ADK reads GOOGLE_API_KEY
@@ -85,11 +85,13 @@ def request_reservation(order: str, origin: str, destination: str, departure: st
     headers = {"Content-Type": "application/json", "X-AAC-Envelope-Schema": "aac.a2a.egress.v1"}
     headers.update(sign_invoke_request(secret=pairing_secret(), method="POST", path=DISPATCH_PATH,
                                        headers=headers, body=body))
-    response = httpx.post(SIDECAR + DISPATCH_PATH, headers=headers, content=body, timeout=65)
+    # trust_env=False: a proxy setting in the container's environment must not divert this loopback call.
+    response = httpx.post(SIDECAR + DISPATCH_PATH, headers=headers, content=body, timeout=65, trust_env=False)
     answer = response.json()
     if response.status_code != 200:
+        error = answer.get("error", {})  # the sidecar's error envelope: {"error": {"code", "message", ...}}
         return {"task_ref": task_ref, "status": "refused", "sidecar_error": answer,
-                "summary": f"My sidecar refused to send the request: {answer.get('code')}, {answer.get('message')}."}
+                "summary": f"My sidecar refused to send the request: {error.get('code')}, {error.get('message')}."}
     return {"task_ref": task_ref, "status": answer["status"], "dispatch_id": answer["dispatch_id"],
             "a2a_response": answer["a2a_response"],
             "summary": "Tourfedia answered: " + reply_text(answer["a2a_response"])}

@@ -28,17 +28,18 @@ async def ask_trip_planner(scenario: str) -> dict:
     message = types.Content(role="user", parts=[
         types.Part(text="Marc Sterling, a director at Vantis Equity, approved this trip. Reserve it with Tourfedia."),
         types.Part(text=json.dumps(order))])
-    result = None
+    result, requested = None, None
     async for event in runner.run_async(user_id="marc-sterling", session_id=session.id, new_message=message):
         for part in event.content.parts if event.content else []:
             if part.function_call:
-                print(json.dumps({"trip_planner_calls": part.function_call.name, "arguments": part.function_call.args}), flush=True)
+                requested = part.function_call.args  # what the model asked the tool for; a live model may differ
+                print(json.dumps({"trip_planner_calls": part.function_call.name, "arguments": requested}), flush=True)
             elif part.function_response:
                 result = part.function_response.response
                 print(json.dumps({"sidecar_acknowledged": result}), flush=True)
             elif part.text and event.is_final_response():
                 print(json.dumps({"trip_planner_says": part.text}), flush=True)
-    return result
+    return result, requested
 
 
 def records(path: Path) -> list[dict]:
@@ -64,8 +65,12 @@ def matching(directory: Path, filename: str, task: str) -> list[dict]:
 
 
 def verify_result(acknowledged: dict, mint: dict, dispatch: dict, receive: dict, action: dict,
-                  booking_id: str, scenario: str) -> dict:
-    """Require one chain through both sidecars to the booking agent's record, then read the decision."""
+                  booking_id: str, scenario: str, amount: int = 8000) -> dict:
+    """Require one chain through both sidecars to the booking agent's record, then read the decision.
+
+    The amount is what the trip-planner asked its tool for: the limit Vantis's sidecar put on the authority
+    and the most the booking agent may hold.
+    """
     task = acknowledged["task_ref"]
     assert acknowledged["status"] == "dispatched", acknowledged
     assert "error" not in acknowledged["a2a_response"], acknowledged
@@ -75,7 +80,7 @@ def verify_result(acknowledged: dict, mint: dict, dispatch: dict, receive: dict,
     assert receive["token_id"] == dispatch["token_id"] == action["token_id"], (dispatch, receive, action)
     assert dispatch["caveat_audience"] == booking_id and receive["actor_spiffe_id"] == booking_id
     limits = dict(part.split(":", 1) for part in dispatch["caveat_predicates"].split(","))
-    assert int(limits["amount_max"]) == 8000 and limits["originator_reference"] == "PO #4143"
+    assert int(limits["amount_max"]) == amount and limits["originator_reference"] == "PO #4143"
     assert limits["task_ref"] == task
     decision = action["action_payload"]["agent_decision"]
     reply = agent.reply_text(acknowledged["a2a_response"])
@@ -84,15 +89,16 @@ def verify_result(acknowledged: dict, mint: dict, dispatch: dict, receive: dict,
     else:
         assert decision["action"] == "settle" and decision["settlement_id"] in reply, (decision, reply)
         held = json.loads(decision["action_summary"])
-        assert held["amount"] == 8000 and held["payment_status"] == "unpaid" and held["order"] == "PO #4143"
+        assert held["amount"] == amount and held["payment_status"] == "unpaid" and held["order"] == "PO #4143"
     return {"task_ref": task, "root_token_id": root, "token_id": dispatch["token_id"], "decision": decision,
             "tourfedia_reply": reply, "mint": mint, "dispatch": dispatch, "receive": receive, "action": action}
 
 
 def run(scenario: str = "reservation") -> dict:
     print(json.dumps({"simulated_approval": APPROVAL}), flush=True)
-    acknowledged = asyncio.run(ask_trip_planner(scenario))
-    assert acknowledged and acknowledged["status"] == "dispatched", acknowledged
+    acknowledged, requested = asyncio.run(ask_trip_planner(scenario))
+    if not acknowledged or acknowledged["status"] != "dispatched":
+        raise SystemExit(f"The sidecar did not dispatch the message: {json.dumps(acknowledged)}")
     task = acknowledged["task_ref"]
     sender, receiver = Path("/evidence/vantis"), Path("/evidence/tourfedia")
     deadline = time.monotonic() + 30
@@ -105,7 +111,7 @@ def run(scenario: str = "reservation") -> dict:
         receive = next((e for e in got if e["event_type"] == "receive"), None)
         if mint and dispatch and receive and actions:
             evidence = verify_result(acknowledged, mint, dispatch, receive, actions[0],
-                                     os.environ["AAC_DEMO_BOOKING_ID"], scenario)
+                                     os.environ["AAC_DEMO_BOOKING_ID"], scenario, int(requested["amount"]))
             print(json.dumps({"evidence": evidence}), flush=True)
             return evidence
         if time.monotonic() >= deadline:
