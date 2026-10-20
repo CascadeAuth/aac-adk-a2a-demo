@@ -1,0 +1,30 @@
+name: checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  fixture-checks:
+    # Everything that needs no tenant: the two agents and the run client
+    # against test doubles, the compose file against a synthetic agent, the
+    # README's commands against the CLI parser, and the shell script.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      # Public Python packages and the sample base image may be downloaded.
+      # AAC sidecar discovery and registry credentials are unnecessary.
+      - run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          python tools/prepare_checks.py
+          python -m py_compile demo agent/*.py
+          python -m pytest tests -q --ignore tests/live
+          docker build --quiet --build-arg AAC_INVOKE_AUTH_VERSION=$(python tools/prepare_checks.py --invoke-version) agent

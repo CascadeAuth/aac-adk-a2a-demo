@@ -1,0 +1,20 @@
+agent_name: booking
+workload_path: booking
+tls_server_names: [booking, localhost, 127.0.0.1]
+sidecar:
+  dev_mode: false
+  external_bind_address: 0.0.0.0
+  # Native delivery; this example sends and receives over A2A only, so it is never called.
+  agent_invoke_url: http://127.0.0.1:8000/invoke
+  telemetry:
+    sink: telemetry.jsonl
+    central_forward: true
+replay_protection:
+  backend: memory
+  deployment_profile: basic
+a2a:
+  public_base_url: https://booking:9443
+  local_handler_url: http://127.0.0.1:8000/a2a/v1
+classes_of_action: {}
+# This agent only answers A2A messages; it has no destination of its own.
+# Add Vantis's public trust after both identities have been registered.
