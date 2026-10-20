@@ -1,0 +1,179 @@
+#!/usr/bin/env python3
+"""Compose convenience only; use the ordinary AAC CLI for setup and maintenance.
+
+./demo prepare                      select current releases and install CLI
+./demo renew                        renew expired development certificates; ./demo up loads them
+./demo up                           start both registered/configured pairs
+./demo run [reservation|fare-change]
+./demo compose <trip-planner|booking> <docker compose arguments...>
+./demo down                         stop containers; retain CLI material
+"""
+import json
+import components
+import os
+import shlex
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent
+CLI_HOME = Path(os.environ.get("AAC_CLI_HOME", Path.home() / ".aac")).resolve()
+AGENTS = ("trip-planner", "booking")
+
+
+def local_name(agent):
+    # Test-only supplied-certificate slot, reusing the same booking identity.
+    return os.environ.get("AAC_TEST_BOOKING_AGENT", "booking") if agent == "booking" else agent
+
+
+def command(*args, capture=False):
+    return subprocess.run(args, cwd=REPO, check=True, text=True,
+                          stdout=subprocess.PIPE if capture else None).stdout
+
+
+def generated_env(agent):
+    # This is the supported Compose output, not the CLI's private record schema.
+    values = {}
+    for line in (CLI_HOME / "agents" / local_name(agent) / "compose.env").read_text().splitlines():
+        if line and not line.startswith("#"):
+            key, value = line.split("=", 1)
+            values[key] = "".join(shlex.split(value))
+    return values
+
+
+def compose(agent, *args, capture=False):
+    if agent not in AGENTS:
+        raise ValueError("Select trip-planner or booking")
+    vantis, tourfedia = (generated_env(name) for name in AGENTS)
+    env = {**os.environ, **components.compose_values(components.selected(REPO)), "AAC_DEMO_UID": str(os.getuid()), "AAC_DEMO_GID": str(os.getgid()),
+           "AAC_DEMO_ROLE": agent, "AAC_DEMO_BOOKING_ID": tourfedia["AAC_WORKLOAD_SPIFFE_ID"],
+           "AAC_DEMO_VANTIS_STATE": vantis["AAC_AGENT_STATE_DIR"],
+           "AAC_DEMO_TOURFEDIA_STATE": tourfedia["AAC_AGENT_STATE_DIR"]}
+    result = subprocess.run(["docker", "compose", "--env-file", str(CLI_HOME / "agents" / local_name(agent) / "compose.env"),
+                    *args], cwd=REPO, env=env, check=True, text=True,
+                   stdout=subprocess.PIPE if capture else None)
+    return result.stdout
+
+
+def renew_expired(agent):
+    """Renew this agent's expired development certificates; True when it did, so its sidecar must be recreated.
+
+    The CLI's development certificates expire (README section 6), and an agent whose certificates have expired
+    refuses `aac init` and fails every run with a TLS error. Leaf renewal keeps the agent's identity and publishes
+    nothing, so the demo does it for a rerun. A new development CA is a new public anchor that the publisher must
+    publish and the peer must trust before a run works; those are visible steps, so README section 6 runs them.
+    """
+    if not (CLI_HOME / "agents" / local_name(agent)).is_dir():
+        return False  # a first run: nothing is registered yet
+    # `status` exits 3 for an agent that needs attention, an expired certificate included, and still prints its report.
+    status = subprocess.run(["aac", "agent", "status", "--agent", local_name(agent), "--output", "json"],
+                            cwd=REPO, text=True, stdout=subprocess.PIPE)
+    if not status.stdout:
+        sys.exit(status.returncode)  # the CLI could not report on this agent and has said why
+    certificates = json.loads(status.stdout)["certificates"]
+    if "dev_ca" not in certificates:
+        return False  # certificates your own issuer signed are renewed with its files (README section 6)
+    if certificates["dev_ca"]["renew_now"]:  # true for an expired CA too
+        # `aac agent renew` would reissue the CA as well, so the demo stops here instead of renewing.
+        raise SystemExit(f"{agent}: its development CA has expired or is about to, so renewing replaces the CA, which "
+                         f"must then be published and trusted by the peer.\n"
+                         f"Follow README section 6's CA renewal, starting with:\n"
+                         f"  aac agent renew --agent {local_name(agent)} --ca\n"
+                         f"  ./demo compose {agent} up -d --force-recreate publisher")
+    expired = [label for label, report in certificates.items() if report["expired"]]
+    if not expired:
+        return False
+    command("aac", "agent", "renew", "--agent", local_name(agent), capture=True)
+    print(f"{agent}: renewed its expired development certificates ({', '.join(expired)})")
+    return True
+
+
+def wait_for_publication(agent):
+    deadline = time.monotonic() + 300
+    while True:
+        # Right after the containers are recreated this check can fail once or twice and succeed a minute later,
+        # so a failed check is retried like a key that is not published yet.
+        status = subprocess.run(["aac", "agent", "status", "--agent", local_name(agent), "--remote", "--output", "json"],
+                                cwd=REPO, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # The supported status fields identify this agent's current public keys. The report is printed even when
+        # `status` exits 3 for an agent that needs attention; only a refusal prints nothing (and says why on stderr).
+        public = json.dumps(json.loads(status.stdout)) if status.stdout else ""
+        if '"contains_root_key_id": true' in public and '"contains_ca_anchor_id": true' in public:
+            return
+        time.sleep(2)
+        if time.monotonic() >= deadline:  # checked after the pause, so no check starts past the deadline
+            raise RuntimeError(f"Public keys not visible for {agent}; inspect its publisher logs"
+                               + (f"\nThe last status check said:\n{status.stderr}" if status.stderr else ""))
+
+
+def main():
+    args = sys.argv[1:]
+    if not args:
+        print(__doc__)
+    elif args[0] == "prepare":
+        if args[1:] not in ([], ["--tests"]):
+            raise ValueError("Use ./demo prepare [--tests]")
+        components.prepare(REPO, tests=args[1:] == ["--tests"])
+    elif args[0] == "compose":
+        compose(args[1], *args[2:])
+    elif args[0] == "renew":
+        if any([renew_expired(agent) for agent in AGENTS]):  # a list, so both agents are renewed
+            print("Run ./demo up so the sidecars load the renewed certificates")
+    elif args[0] == "up":
+        for agent in AGENTS:
+            renew_expired(agent)  # the recreation below loads the renewed certificates
+        current = command("docker", "network", "ls", "--format", "{{.Name}}", capture=True).splitlines()
+        if "aac-adk-a2a-demo" not in current:
+            command("docker", "network", "create", "aac-adk-a2a-demo")
+        compose("trip-planner", "build", "agent")
+        for agent in AGENTS:
+            compose(agent, "up", "--detach", "--no-build", "--force-recreate")
+        for agent in AGENTS:
+            compose(agent, "run", "--rm", "--no-deps", "client", "wait")
+            wait_for_publication(agent)
+        print("Both pairs are ready. Run ./demo run")
+    elif args[0] == "run":
+        scenario = args[1] if len(args) > 1 else "reservation"
+        if scenario not in ("reservation", "fare-change"):
+            raise ValueError("Unknown demo scenario")
+        for agent in AGENTS:
+            if renew_expired(agent):
+                # The sidecar reads its certificates when it starts, so the renewed pair is recreated as `up` does.
+                compose(agent, "up", "--detach", "--no-build", "--force-recreate")
+                compose(agent, "run", "--rm", "--no-deps", "client", "wait")
+        try:
+            output = compose("trip-planner", "run", "--rm", "--no-deps", "client", scenario, capture=True)
+        except subprocess.CalledProcessError as failed:
+            # The client's error is already on the terminal; show the rows it printed before stopping.
+            print(failed.stdout, end="")
+            sys.exit(failed.returncode)
+        print(output, end="")
+        evidence = next(json.loads(line)["evidence"] for line in output.splitlines() if line.startswith('{"evidence"'))
+        runs = REPO / ".runs"
+        runs.mkdir(exist_ok=True)
+        run = runs / evidence["task_ref"]
+        Path(str(run) + ".json").write_text(json.dumps(evidence, indent=2) + "\n")
+        # The renderer reads whole files of chain events and action records. The sidecars' sinks also hold
+        # their A2A diagnostics, which it does not read, and only Tourfedia's agent records an action, so
+        # the records of this run are written out on their own: Vantis's mint and dispatch, Tourfedia's
+        # receive, and the booking agent's action.
+        for suffix, rows in (("vantis", [evidence["mint"], evidence["dispatch"]]), ("tourfedia", [evidence["receive"]]),
+                             ("actions", [evidence["action"]])):
+            Path(f"{run}.{suffix}.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+        command_line = ["aeg", "render", "--root-token-id", evidence["root_token_id"],
+                        "--events", f"{run}.vantis.jsonl", "--actions", f"{run}.actions.jsonl",
+                        "--events", f"{run}.tourfedia.jsonl", "--output", f"{run}.html"]
+        print("AEG input mapping: " + json.dumps({"order": "PO #4143", "scenario": scenario, "task_ref": evidence["task_ref"], "root_token_id": evidence["root_token_id"], "evidence": f"{run}.json"}))
+        print("Render this attempt locally:\n" + shlex.join(command_line))
+        print("Add --profile vantis to include authorized central metadata; local files remain local.")
+    elif args[0] == "down":
+        for agent in AGENTS:
+            compose(agent, "down")
+        command("docker", "network", "rm", "aac-adk-a2a-demo")
+    else:
+        raise ValueError("See ./demo for commands")
+
+
+if __name__ == "__main__":
+    main()

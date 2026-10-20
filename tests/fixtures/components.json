@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "fixture": "Ordinary checks only; container digests are synthetic and never pulled.",
+  "packages": {
+    "aac-cli": {
+      "version": "0.2.13",
+      "url": "https://files.pythonhosted.org/packages/c2/d9/0d46727cba72208671dd45f838cbb9bc1d16101547a126693f9888508412/aac_cli-0.2.13-py3-none-any.whl",
+      "sha256": "d15ca2e595a414ca9e0c1b7142610cdef11d44a80f500085b85441df3a9a09c0"
+    },
+    "aac-invoke-auth": {
+      "version": "0.1.2",
+      "url": "https://files.pythonhosted.org/packages/94/4c/1b8f3a3dd8234b78724151534b8f3d3bb9bc33b9b42e2a83dc8cfddfaa67/aac_invoke_auth-0.1.2-py3-none-any.whl",
+      "sha256": "1c11b54f129b95c653a73b62ea971fcfbaded471d356dccf41bfa793d171d1ad"
+    },
+    "aac-trust-anchor-publisher": {
+      "version": "0.2.3",
+      "url": "https://files.pythonhosted.org/packages/e0/5f/74a93abeb103c03f8ea7d2310b3c9aa4fc124a8f5524c9a57ae79ff7bc64/aac_trust_anchor_publisher-0.2.3-py3-none-any.whl",
+      "sha256": "30c0624d6632b682431eca8945634a62216a74c786cf7ee76984c6fa299d7a1d"
+    }
+  },
+  "sidecar": {
+    "image": "docker.io/cascadeauth/aac-sidecar@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "publisher": {
+    "image": "ghcr.io/cascadeauth/aac-trust-anchor-publisher@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+  }
+}

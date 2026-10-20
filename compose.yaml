@@ -1,0 +1,89 @@
+# One tenant's ADK agent, sidecar and publisher. ./demo starts this once for
+# each agent, with that agent's CLI-generated compose.env.
+name: aac-adk-a2a-demo-${AAC_DEMO_ROLE}
+x-user: &user "${AAC_DEMO_UID:?}:${AAC_DEMO_GID:?}"
+# The scripted model needs no key. Set AAC_DEMO_MODEL (and the key or address
+# it needs) to drive the same run with your own model; see the README.
+x-model: &model
+  AAC_DEMO_MODEL: ${AAC_DEMO_MODEL:-}
+  GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+  OLLAMA_API_BASE: ${OLLAMA_API_BASE:-}
+
+services:
+  agent:
+    build:
+      context: ./agent
+      args:
+        AAC_INVOKE_AUTH_VERSION: ${AAC_DEMO_INVOKE_AUTH_VERSION:?Run ./demo prepare}
+    image: aac-adk-a2a-demo-agent:local
+    user: *user
+    environment:
+      <<: *model
+      AAC_DEMO_ROLE: ${AAC_DEMO_ROLE:?}
+      AAC_TENANT_ID: ${AAC_TENANT_ID:?}
+      AAC_WORKLOAD_SPIFFE_ID: ${AAC_WORKLOAD_SPIFFE_ID:?}
+      AAC_DEMO_ACTIONS: /evidence/actions.jsonl
+      AAC_INVOKE_AUTH_SECRET_FILE: /run/secrets/pairing.secret
+    volumes:
+      - {type: bind, source: "${AAC_AGENT_SHARED_DIR:?}", target: /run/secrets, read_only: true}
+      - {type: bind, source: "${AAC_AGENT_STATE_DIR:?}", target: /evidence}
+    networks:
+      peers:
+        aliases: ["${AAC_DEMO_ROLE:?}"]
+    # Lets a model served on this machine (README section 5) be reached as host.docker.internal on Linux too.
+    extra_hosts: ["host.docker.internal:host-gateway"]
+
+  sidecar:
+    image: ${AAC_DEMO_SIDECAR_IMAGE:?Run ./demo prepare}
+    user: *user
+    network_mode: service:agent
+    depends_on: [agent]
+    command: ["-config", "/etc/aac/sidecar-config.yaml"]
+    volumes:
+      - {type: bind, source: "${AAC_SIDECAR_CONFIG_FILE:?}", target: /etc/aac/sidecar-config.yaml, read_only: true}
+      - {type: bind, source: "${AAC_AGENT_SIDECAR_DIR:?}", target: /etc/aac/pki, read_only: true}
+      - {type: bind, source: "${AAC_AGENT_SHARED_DIR:?}/pairing.secret", target: /run/secrets/pairing.secret, read_only: true}
+      - {type: bind, source: "${AAC_API_KEY_FILE:?}", target: /run/secrets/tenant-api-key, read_only: true}
+      - {type: bind, source: "${AAC_AGENT_STATE_DIR:?}", target: /var/lib/aac}
+
+  publisher:
+    image: ${AAC_DEMO_PUBLISHER_IMAGE:?Run ./demo prepare}
+    user: *user
+    environment:
+      AAC_TAP_TENANT_ID: ${AAC_TENANT_ID:?}
+      AAC_TAP_ADMIN_KEY_FILE: /keys/tenant-admin.pem
+      AAC_TAP_ROOT_KEYS_DIR: /root-keys
+      AAC_TAP_ROOT_KEYS_INGEST_URL: ${AAC_DATA_PLANE_URL:?}/v1/root-keys/ingest
+      AAC_TAP_SPIFFE_BUNDLE_DIR: /spiffe-bundle
+      AAC_TAP_SPIFFE_BUNDLE_INGEST_URL: ${AAC_DATA_PLANE_URL:?}/v1/spiffe-bundle/ingest
+      AAC_TAP_SPIFFE_TRUST_DOMAIN: ${AAC_TRUST_DOMAIN:?}
+      AAC_TAP_SPIFFE_BUNDLE_READ_URL: ${AAC_TRUST_URL:?}/.well-known/spiffe-bundle/${AAC_TRUST_DOMAIN:?}
+      AAC_TAP_POLL_INTERVAL_SECONDS: "60"
+    volumes:
+      - {type: bind, source: "${AAC_TENANT_DIR:?}/tenant-admin.pem", target: /keys/tenant-admin.pem, read_only: true}
+      - {type: bind, source: "${AAC_TENANT_DIR:?}/root-keys", target: /root-keys, read_only: true}
+      - {type: bind, source: "${AAC_TENANT_DIR:?}/spiffe-bundle", target: /spiffe-bundle, read_only: true}
+    networks: [peers]
+
+  # Vantis's run: the trip-planner agent, driven by ./demo run inside the trip-planner pair.
+  client:
+    image: aac-adk-a2a-demo-agent:local
+    user: *user
+    profiles: [exercise]
+    network_mode: service:agent
+    environment:
+      <<: *model
+      AAC_DEMO_ROLE: ${AAC_DEMO_ROLE:?}
+      AAC_INVOKE_AUTH_SECRET_FILE: /run/secrets/pairing.secret
+      AAC_DEMO_BOOKING_ID: ${AAC_DEMO_BOOKING_ID:?}
+    volumes:
+      - {type: bind, source: "${AAC_AGENT_SHARED_DIR:?}", target: /run/secrets, read_only: true}
+      - {type: bind, source: "${AAC_DEMO_VANTIS_STATE:?}", target: /evidence/vantis, read_only: true}
+      - {type: bind, source: "${AAC_DEMO_TOURFEDIA_STATE:?}", target: /evidence/tourfedia, read_only: true}
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    entrypoint: ["python", "client.py"]
+
+networks:
+  peers:
+    external: true
+    name: aac-adk-a2a-demo

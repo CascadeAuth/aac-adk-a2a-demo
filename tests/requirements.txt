@@ -1,0 +1,7 @@
+# Third-party test dependencies. ./demo prepare --tests installs the frozen AAC selection.
+pytest==9.0.2
+httpx==0.28.1
+PyYAML==6.0.3
+markdown-it-py==4.0.0
+uvicorn==0.54.0
+google-adk[a2a]==2.12.0

@@ -1,0 +1,24 @@
+agent_name: trip-planner
+workload_path: trip-planner
+tls_server_names: [trip-planner, localhost, 127.0.0.1]
+sidecar:
+  dev_mode: false
+  external_bind_address: 0.0.0.0
+  # Native delivery; this example sends and receives over A2A only, so it is never called.
+  agent_invoke_url: http://127.0.0.1:8000/invoke
+  telemetry:
+    sink: telemetry.jsonl
+    central_forward: true
+replay_protection:
+  backend: memory
+  deployment_profile: basic
+a2a:
+  public_base_url: https://trip-planner:9443
+  local_handler_url: http://127.0.0.1:8000/a2a/v1
+classes_of_action:
+  reserve_travel:
+    predicates:
+      action: reserve_travel
+    valid_for: +2h
+# Register first. Then explicitly add peer trust and the tourfedia destination
+# to your copy of this input, using the booking agent's actual status output.
