@@ -54,16 +54,16 @@ def test_quickstart_renews_expired_certificates_after_the_cli_home_is_set_and_be
     assert any(line.startswith(': "== 2.') for line in script[renew:])
 
 
-def quickstart_render_args(cli_home, evidence):
+def quickstart_render_args(evidence):
     """The quickstart's render command, parsed, with its shell variables filled in."""
     script = (REPO / "quickstart").read_text()
     render = script.split("\naeg render ", 1)[1].split("\n\n", 1)[0].replace("\\\n", "")
     lines = script.splitlines()
-    root_line = next(line for line in lines if line.startswith("ROOT="))
-    graph_line = next(line for line in lines if line.startswith("GRAPH="))
-    values = subprocess.run(["bash", "-c", f'EVIDENCE={shlex.quote(str(evidence))}; {root_line}; {graph_line}; printf "%s\\n%s" "$ROOT" "$GRAPH"'],
+    assignments = "; ".join(next(line for line in lines if line.startswith(name + "=")) for name in ("ROOT", "RUN", "GRAPH"))
+    values = subprocess.run(["bash", "-c", f'EVIDENCE={shlex.quote(str(evidence))}; {assignments}; printf "%s\\n%s\\n%s" "$ROOT" "$RUN" "$GRAPH"'],
                             check=True, capture_output=True, text=True).stdout.split("\n")
-    render = render.replace("$AAC_CLI_HOME", str(cli_home)).replace('"$ROOT"', values[0]).replace('"$GRAPH"', values[1])
+    render = render.replace('"$ROOT"', values[0]).replace('"$RUN.', values[1] + ".").replace('"$GRAPH"', values[2] + '"')
+    render = render.replace('"', "")
     return parser().parse_args(["render", *shlex.split(render)])
 
 
@@ -75,16 +75,26 @@ def test_quickstart_renders_the_same_graph_as_demo_run(synthetic_home, tmp_path,
     module = importlib.util.module_from_spec(spec); loader.exec_module(module)
     monkeypatch.setattr(module, "REPO", tmp_path)
     monkeypatch.setattr(module, "renew_expired", lambda agent: False)  # nothing expired in the synthetic home
-    evidence = {"task_ref": "attempt-1", "root_token_id": "a" * 64, "token_id": "b" * 64}
+    from test_demo import chain_evidence
+    evidence = chain_evidence("attempt-1")
     monkeypatch.setattr(module, "compose", lambda *a, **k: json.dumps({"evidence": evidence}) + "\n")
     monkeypatch.setattr(module.sys, "argv", ["demo", "run", "reservation"])
     module.main()
     printed = capsys.readouterr().out.split("Render this attempt locally:\n", 1)[1].splitlines()[0]
     demo = parser().parse_args(shlex.split(printed)[1:])
 
-    quickstart = quickstart_render_args(synthetic_home, tmp_path / ".runs/attempt-1.json")
+    quickstart = quickstart_render_args(tmp_path / ".runs/attempt-1.json")
     for field in ("root_token_id", "events", "actions", "output"):
         assert getattr(quickstart, field) == getattr(demo, field), field
+
+
+def test_the_printed_follow_up_activates_the_tools_before_any_demo_command():
+    """The quickstart's tools and CLI home end with the script; the commands it suggests need them back."""
+    script = (REPO / "quickstart").read_text()
+    follow_up = script.split("Quickstart demo completed successfully.", 1)[1]
+    commands = [line.split("'")[1].strip() for line in follow_up.splitlines() if line.startswith("echo '  ")]
+    assert commands[:2] == [". .aac-tools/bin/activate", 'export AAC_CLI_HOME="$PWD/.local/aac"']
+    assert all(command.startswith("./demo ") for command in commands[2:]) and len(commands) > 2
 
 
 def test_quickstart_is_an_executable_shell_script():

@@ -145,6 +145,46 @@ def test_the_rules_copy_refuses_credential_shaped_values_like_the_sidecar():
                      {"metadata": {"note": "AAC-Macaroon abc"}}):
         with pytest.raises(AssertionError, match="credential-shaped"):
             sidecar_rules.check_reply({**reply, **smuggled}, TASK)
+    # Ordinary long base64url text is not a credential; the sidecar decodes a real one, which this copy does not claim.
+    assert sidecar_rules.check_reply({**reply, "metadata": {"note": "A" * 400}}, TASK) == "message"
+
+
+@pytest.mark.parametrize("error,reason", [
+    ({"code": True, "message": "x"}, "integer"),
+    ({"code": -32601, "message": "x", "data": [{"@type": 123}]}, "typed-object list"),
+    ({"code": -32601, "message": "x", "data": [{"@type": ""}]}, "typed-object list"),
+])
+def test_the_rules_copy_refuses_the_error_shapes_the_sidecar_refuses(error, reason):
+    with pytest.raises(AssertionError, match=reason):
+        sidecar_rules.check_reply({"jsonrpc": "2.0", "id": TASK, "error": error}, TASK)
+    good = {"jsonrpc": "2.0", "id": TASK, "error": {"code": -32601, "message": "x", "data": [{"@type": "example.Detail"}]}}
+    assert sidecar_rules.check_reply(good, TASK) == "error"
+
+
+def test_booking_holds_to_the_delivered_amount_whatever_its_model_asks_for(agent_module, agent_env):
+    from google.adk.agents import LlmAgent
+    from google.adk.models.llm_response import LlmResponse
+    from google.genai import types
+
+    class Inflating(agent_module.ScriptedModel):
+        """A model that asks the tool for more than the sender allowed."""
+        async def generate_content_async(self, llm_request, stream=False):
+            last = llm_request.contents[-1]
+            if any(part.function_response for part in last.parts):
+                yield LlmResponse(content=types.Content(role="model", parts=[types.Part(text="Held at $9,500.")]))
+            else:
+                args = {**agent_module.ORDER, "amount": 9500, "scenario": "reservation"}
+                yield LlmResponse(content=types.Content(role="model", parts=[types.Part(function_call=types.FunctionCall(name="hold_reservation", args=args))]))
+
+    agent = LlmAgent(name="booking", model=Inflating(tool="hold_reservation"), tools=[agent_module.hold_reservation])
+    body = json.dumps(a2a_request(agent_module)).encode()  # the delivered order allows $8,000
+    with TestClient(agent_module.a2a_app(agent)) as client:
+        reply = client.post("/a2a/v1", headers=signed(body), content=body).json()
+    assert sidecar_rules.check_reply(reply, TASK) == "task TASK_STATE_COMPLETED"
+    [record] = actions(agent_env)
+    held = json.loads(record["action_payload"]["agent_decision"]["action_summary"])
+    assert record["action_payload"]["decision"] == "settle" and held["amount"] == 8000
+    assert record["action_payload"]["payload"]["amount"] == 8000 and record["action_payload"]["model_asked_for"]["amount"] == 9500
 
 
 def test_reply_text_reads_messages_tasks_and_errors(agent_module):

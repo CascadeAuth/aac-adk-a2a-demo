@@ -152,14 +152,19 @@ def main():
         evidence = next(json.loads(line)["evidence"] for line in output.splitlines() if line.startswith('{"evidence"'))
         runs = REPO / ".runs"
         runs.mkdir(exist_ok=True)
-        evidence_path = runs / (evidence["task_ref"] + ".json")
-        evidence_path.write_text(json.dumps(evidence, indent=2) + "\n")
-        command_line = ["aeg", "render", "--root-token-id", evidence["root_token_id"]]
-        for agent in AGENTS:
-            state = Path(generated_env(agent)["AAC_AGENT_STATE_DIR"])
-            command_line += ["--events", str(state / "telemetry.jsonl"), "--actions", str(state / "actions.jsonl")]
-        command_line += ["--output", str(runs / (evidence["task_ref"] + ".html"))]
-        print("AEG input mapping: " + json.dumps({"order": "PO #4143", "scenario": scenario, "task_ref": evidence["task_ref"], "root_token_id": evidence["root_token_id"], "evidence": str(evidence_path)}))
+        run = runs / evidence["task_ref"]
+        Path(str(run) + ".json").write_text(json.dumps(evidence, indent=2) + "\n")
+        # The renderer reads whole files of chain events and action records. The sidecars' sinks also hold
+        # their A2A diagnostics, which it does not read, and only Tourfedia's agent records an action, so
+        # the records of this run are written out on their own: Vantis's mint and dispatch, Tourfedia's
+        # receive, and the booking agent's action.
+        for suffix, rows in (("vantis", [evidence["mint"], evidence["dispatch"]]), ("tourfedia", [evidence["receive"]]),
+                             ("actions", [evidence["action"]])):
+            Path(f"{run}.{suffix}.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+        command_line = ["aeg", "render", "--root-token-id", evidence["root_token_id"],
+                        "--events", f"{run}.vantis.jsonl", "--actions", f"{run}.actions.jsonl",
+                        "--events", f"{run}.tourfedia.jsonl", "--output", f"{run}.html"]
+        print("AEG input mapping: " + json.dumps({"order": "PO #4143", "scenario": scenario, "task_ref": evidence["task_ref"], "root_token_id": evidence["root_token_id"], "evidence": f"{run}.json"}))
         print("Render this attempt locally:\n" + shlex.join(command_line))
         print("Add --profile vantis to include authorized central metadata; local files remain local.")
     elif args[0] == "down":

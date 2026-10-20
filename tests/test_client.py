@@ -18,9 +18,14 @@ def evidence(scenario="reservation"):
     else:
         decision = {"action": "settle", "settlement_id": held["reservation_id"], "action_summary": json.dumps(held, sort_keys=True)}
         text = "Reservation synthetic-po4143-test held for PO #4143, Austin to Shanghai on 12 May, $8,000, unpaid."
+    # ADK's reply: a completed task whose history carries the tool's result as a function_response data part.
     acknowledged = {"task_ref": TASK, "status": "dispatched", "dispatch_id": "d-1", "a2a_response": {
-        "jsonrpc": "2.0", "id": TASK, "result": {"message": {"messageId": "r", "contextId": "c", "role": "ROLE_AGENT",
-                                                             "parts": [{"text": text}]}}}}
+        "jsonrpc": "2.0", "id": TASK, "result": {"task": {
+            "id": "t", "contextId": "c", "status": {"state": "TASK_STATE_COMPLETED"},
+            "artifacts": [{"artifactId": "a", "parts": [{"text": text}]}],
+            "history": [{"messageId": "h", "contextId": "c", "role": "ROLE_AGENT", "parts": [
+                {"data": {"name": "hold_reservation", "response": {**decision, "summary": text}, "id": "adk-1"},
+                 "metadata": {"adk_type": "function_response"}}]}]}}}}
     common = {"result": "success", "root_token_id": ROOT, "task_ref": TASK}
     mint = {"event_type": "mint", **common, "token_id": ROOT}
     dispatch = {"event_type": "dispatch", **common, "token_id": TOKEN, "caveat_audience": BOOKING,
@@ -52,10 +57,23 @@ def test_ack_or_mismatched_evidence_is_not_success(client_module, index, key, va
         client_module.verify_result(*args)
 
 
-def test_a_reply_that_does_not_match_the_record_is_not_success(client_module):
+def test_the_models_wording_is_printed_not_checked(client_module):
+    for scenario, wording in (("reservation", "Your $8,000 trip is reserved and remains unpaid."),
+                              ("fare-change", "I declined because the $9,500 fare exceeds the $8,000 limit.")):
+        args = evidence(scenario)
+        args[0]["a2a_response"]["result"]["task"]["artifacts"][0]["parts"][0]["text"] = wording
+        assert client_module.verify_result(*args)["tourfedia_reply"] == wording
+
+
+def test_a_tool_result_that_does_not_match_the_record_is_not_success(client_module):
     args = evidence()
-    args[0]["a2a_response"]["result"]["message"]["parts"][0]["text"] = "Reservation synthetic-other held."
+    reported = args[0]["a2a_response"]["result"]["task"]["history"][0]["parts"][0]["data"]["response"]
+    reported["settlement_id"] = "synthetic-other"
     with pytest.raises(AssertionError):
+        client_module.verify_result(*args)
+    args = evidence()
+    args[0]["a2a_response"]["result"]["task"]["history"] = []
+    with pytest.raises(AssertionError, match="no tool result"):
         client_module.verify_result(*args)
 
 

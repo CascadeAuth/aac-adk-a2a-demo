@@ -8,7 +8,9 @@ tests/fixtures/components.json whenever that release changes.
 
 Not mirrored here, because they concern the transport rather than the JSON: the sidecar also requires
 HTTP 200, exactly one Content-Type of application/json, no Content-Encoding, a body within the configured
-size, nesting and node limits, and no duplicate object members (`service.go`).
+size, nesting and node limits, and no duplicate object members (`service.go`). Also not mirrored: the
+sidecar's detection of a raw AAC credential inside a string, which needs its wire decoder; the reply never
+carries one, and this copy claims nothing about that case.
 """
 import base64
 import json
@@ -30,8 +32,7 @@ def smuggles_a_credential(value):
     if isinstance(value, list):
         return any(smuggles_a_credential(child) for child in value)
     if isinstance(value, str):
-        return (value.lower().startswith("aac-macaroon ") or bool(BEARER.match(value))
-                or is_dpop_jws(value) or is_raw_aac_credential(value))
+        return value.lower().startswith("aac-macaroon ") or bool(BEARER.match(value)) or is_dpop_jws(value)
     return False
 
 
@@ -44,16 +45,6 @@ def is_dpop_jws(value):
     except (ValueError, UnicodeDecodeError):
         return False
     return isinstance(header, dict) and header.get("typ") in ("dpop+jwt", "aac-dpop+jwt")
-
-
-def is_raw_aac_credential(value):
-    if len(value) < 394 or not BASE64URL.match(value):
-        return False
-    try:
-        decoded = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
-    except ValueError:
-        return False
-    return len(decoded) >= 2 and decoded[0] == 1 and decoded[1] & ~1 == 0
 
 
 def check_part(part):
@@ -116,10 +107,12 @@ def check_reply(value, request_id):
     assert ("result" in value) != ("error" in value), "response must contain exactly one result or error"
     if "error" in value:
         error = value["error"]
-        assert isinstance(error, dict) and isinstance(error.get("code"), int), "error code must be an integer"
+        code = error.get("code") if isinstance(error, dict) else None
+        assert isinstance(code, int) and not isinstance(code, bool), "error code must be an integer"
         assert isinstance(error.get("message"), str) and error["message"], "error message is required"
         if "data" in error:
-            assert isinstance(error["data"], list) and all(isinstance(item, dict) and item.get("@type") for item in error["data"]), \
+            assert isinstance(error["data"], list) and all(
+                isinstance(item, dict) and isinstance(item.get("@type"), str) and item["@type"] for item in error["data"]), \
                 "A2A error data must be a typed-object list"
         return "error"
     result = value["result"]

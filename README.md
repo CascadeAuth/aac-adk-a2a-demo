@@ -108,21 +108,16 @@ renews the expired ones before step 2 and prints what it renewed, and
 `./demo run` does the same before a scenario.
 
 The demo keeps running in Docker until you stop it with `./demo down`. The
-quickstart's settings end with the script, so put the demo's CLI home in
-front of each later command:
-
-```sh
-AAC_CLI_HOME="$PWD/.local/aac" ./demo run fare-change
-AAC_CLI_HOME="$PWD/.local/aac" ./demo down
-```
-
-To work through the later steps by hand instead, use a terminal dedicated to
-the demo, as step 1 does: activate the tools and point the CLI at the demo's
-home with the two lines below.
+tools the quickstart installed and the demo's CLI home end with the script,
+so in a terminal dedicated to the demo, activate the tools and point the CLI
+at the demo's home first, as step 1 does; every later command, including the
+other scenario of step 4 and the stop, then runs as written:
 
 ```sh
 . .aac-tools/bin/activate
 export AAC_CLI_HOME="$PWD/.local/aac"
+./demo run fare-change
+./demo down
 ```
 
 ## How the pieces hand work to each other
@@ -153,9 +148,13 @@ Read the code in this order; each file is short.
    booking agent, wrapped in two small pieces: the pairing-signature check
    from aac-invoke-auth, so only the sidecar can reach it, and
    `VerifiedContext`, which keeps the verified headers where the tool can read
-   them. `hold_reservation` holds the unpaid reservation if the fare is within
-   `amount` and writes the booking agent's action record with the token the
-   sidecar presented.
+   them, together with the order exactly as the delivered message carries it
+   (`remember_the_order`). `hold_reservation` holds the unpaid reservation if
+   the fare is within the amount in that delivered order, and writes the
+   booking agent's action record with the token the sidecar presented. Its
+   arguments are what the model read from the message; the limit and the
+   record come from the message itself, so a model that asks for more than
+   the sender allowed cannot raise what Tourfedia holds.
 7. `stamp_context_id`: ADK answers with a completed A2A task whose history
    holds the model's tool call and the tool's result. The sidecar checks every
    message in the reply and requires a context id on each; ADK sets it on the
@@ -168,8 +167,10 @@ Read the code in this order; each file is short.
 9. [agent/client.py](agent/client.py), `run`: the client then reads the
    evidence: the `mint` and `dispatch` events Vantis's sidecar wrote, the
    `receive` event Tourfedia's sidecar wrote and the booking agent's action
-   record, all correlated by task and root token, and prints them. An HTTP
-   200 or `dispatched` acknowledgement alone does not pass.
+   record, all correlated by task and root token, and prints them. The
+   booking tool's result travelled back inside the reply, in ADK's task
+   history, and must be the decision Tourfedia recorded. An HTTP 200 or
+   `dispatched` acknowledgement alone does not pass.
 
 ## 1. Install AAC CLI and prepare the example
 
@@ -366,10 +367,14 @@ for the fields.
 
 ### View this execution graph
 
-Each `./demo run` saves its evidence in `.runs/`, prints the order → scenario
-→ task-reference → root mapping and prints a complete `aeg render` command
-with the actual telemetry and action paths and the HTML output. Run that
-printed command; `aeg` is installed with the CLI. The resulting HTML opens
+Each `./demo run` saves its evidence in `.runs/`: the correlated records of
+that run, written out on their own as the renderer's inputs (Vantis's `mint`
+and `dispatch` events, Tourfedia's `receive` event and the booking agent's
+action record; the sidecars' own sinks also hold A2A diagnostics the renderer
+does not read, and only Tourfedia's agent records an action). It prints the
+order → scenario → task-reference → root mapping and a complete `aeg render`
+command over those files with the HTML output. Run that printed command;
+`aeg` is installed with the CLI. The resulting HTML opens
 without a server or network assets; double-click nodes for the limits,
 workload identities and the booking agent's record. An A2A exchange has no
 signed terminal receipt, so the graph ends at the booking agent's received
@@ -410,9 +415,12 @@ export OLLAMA_API_BASE=http://host.docker.internal:11434
 Unset `AAC_DEMO_MODEL` and run `./demo up` again to return to the script. The
 model never sees a key, token or proof: the tools talk to the sidecars, and a
 model that calls the tool with a different amount changes only what Vantis's
-sidecar allows Tourfedia to spend. Model output varies, so the client checks
-the evidence, not the sentences: the amount the model asked the tool for must
-be the limit on the authority and the amount held, whatever the sentences say.
+sidecar allows Tourfedia to spend, and the booking agent holds to the amount
+in the delivered message whatever its model asks for. Model output varies, so
+the client checks the evidence, not the sentences: the amount the trip-planner
+asked its tool for must be the limit on the authority and the amount held, and
+the booking tool's result inside the reply must be the decision Tourfedia
+recorded, whatever the sentences around them say.
 
 ## 6. Refresh, renew and restart
 

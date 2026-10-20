@@ -118,24 +118,34 @@ trip_planner = LlmAgent(
 # ---- Tourfedia: the booking agent and its one tool -------------------------------------------------------
 
 # What the sidecar verified about the message being handled: the task, the presenting workload and the
-# originating tenant, taken from the X-AAC-* headers it signed. Set per request by VerifiedContext below.
+# originating tenant from the X-AAC-* headers it signed (set per request by VerifiedContext below), and
+# the order exactly as the delivered message carries it (set by remember_the_order below).
 verified = contextvars.ContextVar("verified")
 
 
 def hold_reservation(order: str, origin: str, destination: str, departure: str, amount: int,
                      scenario: str = "reservation") -> dict:
-    """Hold an unpaid reservation for the trip if the fare is within the amount the sender may spend."""
+    """Hold an unpaid reservation for the trip if the fare is within the amount the sender may spend.
+
+    The arguments are what the model read from the message. The limit, the fare and the record come from
+    the order as the sidecar delivered it, so a model that asks for more than the sender allowed cannot
+    raise what Tourfedia holds.
+    """
     context = verified.get()
-    fare = 9500 if scenario == "fare-change" else amount  # the fare-change run simulates a price rise
-    if fare > amount:
-        decision = {"action": "refuse", "reason": f"The fare is now ${fare:,}, above the ${amount:,} I may spend."}
+    delivered = context["order"]
+    allowed = int(delivered["amount"])
+    fare = 9500 if delivered.get("scenario") == "fare-change" else allowed  # the fare-change run simulates a price rise
+    if fare > allowed:
+        decision = {"action": "refuse", "reason": f"The fare is now ${fare:,}, above the ${allowed:,} I may spend."}
         summary = f"No reservation: {decision['reason']}"
     else:
         reservation = "synthetic-" + context["task_ref"]
-        result = {"order": order, "origin": origin, "destination": destination, "departure": departure,
-                  "reservation_id": reservation, "amount": fare, "currency": "USD", "payment_status": "unpaid"}
+        result = {"order": delivered["order"], "origin": delivered["origin"], "destination": delivered["destination"],
+                  "departure": delivered["departure"], "reservation_id": reservation, "amount": fare,
+                  "currency": "USD", "payment_status": "unpaid"}
         decision = {"action": "settle", "settlement_id": reservation, "action_summary": json.dumps(result, sort_keys=True)}
-        summary = f"Reservation {reservation} held for {order}, {origin} to {destination} on {departure}, ${fare:,}, unpaid."
+        summary = (f"Reservation {reservation} held for {result['order']}, {result['origin']} to {result['destination']} "
+                   f"on {result['departure']}, ${fare:,}, unpaid.")
     # The public eight-field action record; the token comes from the verified context, never the message.
     record = {"timestamp_unix_seconds": time.time(), "event_type": "action_taken",
               "tenant_id": os.environ["AAC_TENANT_ID"], "tenant_short": "Tourfedia",
@@ -144,7 +154,8 @@ def hold_reservation(order: str, origin: str, destination: str, departure: str, 
               "action_payload": {"task_ref": context["task_ref"], "decision": decision["action"],
                                  "agent_decision": decision, "sender": context["presenter_spiffe_id"],
                                  "originator_tenant_id": context["originator_tenant_id"],
-                                 "payload": {"order": order, "amount": amount, "scenario": scenario}}}
+                                 "payload": {"order": delivered["order"], "amount": allowed, "scenario": delivered.get("scenario")},
+                                 "model_asked_for": {"order": order, "amount": amount, "scenario": scenario}}}
     with Path(os.environ["AAC_DEMO_ACTIONS"]).open("a", encoding="utf-8") as output:
         output.write(json.dumps(record) + "\n")
     return {**decision, "summary": summary}
@@ -173,6 +184,14 @@ class VerifiedContext:
         await self.app(scope, receive, send)
 
 
+async def remember_the_order(context):
+    """Keep the order as the verified message carries it, next to the headers, before the model runs."""
+    for part in context.message.parts:
+        if part.HasField("text") and part.text.lstrip().startswith("{"):
+            verified.get()["order"] = json.loads(part.text)
+    return context
+
+
 async def stamp_context_id(executor_context, a2a_event, adk_event):
     """The sidecar requires a context id on every message in the reply, history included; ADK sets it on the
     task and leaves it off the messages, so copy the task's onto each message before it is sent."""
@@ -185,7 +204,8 @@ async def stamp_context_id(executor_context, a2a_event, adk_event):
 def a2a_app(agent: LlmAgent):
     """ADK's A2A server for the agent, reachable only through the sidecar: the pairing signature is checked first."""
     app = to_a2a(agent, rpc_path="a2a/v1", agent_executor_factory=lambda runner: A2aAgentExecutor(
-        runner=runner, config=A2aAgentExecutorConfig(execute_interceptors=[ExecuteInterceptor(after_event=stamp_context_id)])))
+        runner=runner, config=A2aAgentExecutorConfig(execute_interceptors=[
+            ExecuteInterceptor(before_agent=remember_the_order, after_event=stamp_context_id)])))
     app.add_middleware(VerifiedContext)
     app.add_middleware(InvokeAuthMiddleware, guard=InvokeAuthGuard.from_env(), protected_paths=("/a2a/v1",))
     return app

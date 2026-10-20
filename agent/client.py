@@ -64,6 +64,16 @@ def matching(directory: Path, filename: str, task: str) -> list[dict]:
     return [row for row in records(directory / filename) if row.get("task_ref") == task]
 
 
+def tool_result_in(a2a_response: dict):
+    """The booking tool's own result, as ADK placed it in the task's history: a data part marked function_response."""
+    task = a2a_response.get("result", {}).get("task", {})
+    for message in task.get("history", []):
+        for part in message.get("parts", []):
+            if part.get("metadata", {}).get("adk_type") == "function_response":
+                return part["data"]["response"]
+    return None
+
+
 def verify_result(acknowledged: dict, mint: dict, dispatch: dict, receive: dict, action: dict,
                   booking_id: str, scenario: str, amount: int = 8000) -> dict:
     """Require one chain through both sidecars to the booking agent's record, then read the decision.
@@ -83,15 +93,20 @@ def verify_result(acknowledged: dict, mint: dict, dispatch: dict, receive: dict,
     assert int(limits["amount_max"]) == amount and limits["originator_reference"] == "PO #4143"
     assert limits["task_ref"] == task
     decision = action["action_payload"]["agent_decision"]
-    reply = agent.reply_text(acknowledged["a2a_response"])
+    # The tool's result travelled back inside the reply; it must be the decision Tourfedia recorded. The
+    # sentences around it are the model's and vary, so they are printed, not checked.
+    reported = tool_result_in(acknowledged["a2a_response"])
+    assert reported is not None, "the reply carries no tool result"
+    assert {key: value for key, value in reported.items() if key != "summary"} == decision, (reported, decision)
     if scenario == "fare-change":
-        assert decision["action"] == "refuse" and "No reservation" in reply, (decision, reply)
+        assert decision["action"] == "refuse", decision
     else:
-        assert decision["action"] == "settle" and decision["settlement_id"] in reply, (decision, reply)
+        assert decision["action"] == "settle", decision
         held = json.loads(decision["action_summary"])
         assert held["amount"] == amount and held["payment_status"] == "unpaid" and held["order"] == "PO #4143"
     return {"task_ref": task, "root_token_id": root, "token_id": dispatch["token_id"], "decision": decision,
-            "tourfedia_reply": reply, "mint": mint, "dispatch": dispatch, "receive": receive, "action": action}
+            "tourfedia_reply": agent.reply_text(acknowledged["a2a_response"]),
+            "mint": mint, "dispatch": dispatch, "receive": receive, "action": action}
 
 
 def run(scenario: str = "reservation") -> dict:

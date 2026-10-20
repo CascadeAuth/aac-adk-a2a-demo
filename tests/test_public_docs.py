@@ -41,6 +41,12 @@ def test_prescribed_journey_has_no_inline_python_and_uses_every_scalar():
     assert "./demo prepare" in text and "components.json" in text
 
 
+def test_the_quickstart_follow_up_block_activates_the_tools_first():
+    quickstart = (ROOT / "README.md").read_text().split("## Quickstart\n", 1)[1].split("\n## How the pieces", 1)[0]
+    block = next(b for b in re.findall(r"```sh\n(.*?)```", quickstart, re.S) if "./demo run fare-change" in b)
+    assert block.splitlines()[:2] == [". .aac-tools/bin/activate", 'export AAC_CLI_HOME="$PWD/.local/aac"']
+
+
 def test_own_model_section_names_the_one_variable_and_both_routes():
     section = (ROOT / "README.md").read_text().split("## 5. Run it with your own model\n", 1)[1].split("\n## 6. ", 1)[0]
     assert "AAC_DEMO_MODEL" in section and "GOOGLE_API_KEY" in section

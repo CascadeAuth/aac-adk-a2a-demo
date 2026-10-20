@@ -108,16 +108,16 @@ aac init --profile tourfedia --agent booking --agent-config .local/booking.yaml
 ./demo run
 
 : "== View this execution graph (${SECONDS}s so far)"
-# The same render command ./demo run printed above, from the evidence that
-# run just saved: its root token id selects the chain.
+# The same render command ./demo run printed above, from the records that
+# run just wrote to .runs/: its root token id selects the chain.
 EVIDENCE=$(ls -t .runs/*.json | head -n 1)
 ROOT=$(sed -n 's/.*"root_token_id": "\([0-9a-f]*\)".*/\1/p' "$EVIDENCE" | head -n 1)
-GRAPH="${EVIDENCE%.json}.html"
+RUN="${EVIDENCE%.json}"
+GRAPH="$RUN.html"
 aeg render --root-token-id "$ROOT" \
-  --events "$AAC_CLI_HOME/agents/trip-planner/state/telemetry.jsonl" \
-  --actions "$AAC_CLI_HOME/agents/trip-planner/state/actions.jsonl" \
-  --events "$AAC_CLI_HOME/agents/booking/state/telemetry.jsonl" \
-  --actions "$AAC_CLI_HOME/agents/booking/state/actions.jsonl" \
+  --events "$RUN.vantis.jsonl" \
+  --actions "$RUN.actions.jsonl" \
+  --events "$RUN.tourfedia.jsonl" \
   --output "$GRAPH"
 
 # The README commands are done; the rest only opens the graph and reports.
@@ -144,14 +144,17 @@ fi
 echo
 echo "Quickstart demo completed successfully."
 echo
-echo "The two agents are still running in Docker. When you want to stop them,"
-echo "run this in the aac-adk-a2a-demo folder:"
-echo '  AAC_CLI_HOME="$PWD/.local/aac" ./demo down'
+echo "The two agents are still running in Docker. The tools this script installed"
+echo "and the demo's CLI home end with it, so in the aac-adk-a2a-demo folder first:"
+echo '  . .aac-tools/bin/activate'
+echo '  export AAC_CLI_HOME="$PWD/.local/aac"'
+echo "then stop the agents when you want to:"
+echo '  ./demo down'
 echo
 echo 'Optional, before stopping: README step 4 shows the other outcome of the same'
 echo 'order. The fare rises to $9,500, above the $8,000 Tourfedia may spend, so its'
 echo 'booking agent declines:'
-echo '  AAC_CLI_HOME="$PWD/.local/aac" ./demo run fare-change'
+echo '  ./demo run fare-change'
 echo
 echo 'To drive the same run with your own model instead of the script, see README'
 echo 'section 5.'

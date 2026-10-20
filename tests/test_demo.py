@@ -1,7 +1,10 @@
 import importlib.machinery
 import importlib.util
 import json
+import shlex
 import subprocess
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -32,16 +35,70 @@ def test_run_prints_exact_input_paths_and_saves_the_evidence(synthetic_home, tmp
     module = importlib.util.module_from_spec(spec); loader.exec_module(module)
     monkeypatch.setattr(module, "REPO", tmp_path)
     monkeypatch.setattr(module, "renew_expired", lambda agent: False)  # nothing expired in the synthetic home
-    evidence = {"task_ref": "attempt-1", "root_token_id": "a" * 64, "token_id": "b" * 64}
+    evidence = chain_evidence("attempt-1")
     monkeypatch.setattr(module, "compose", lambda *a, **k: json.dumps({"evidence": evidence}) + "\n")
     monkeypatch.setattr(module.sys, "argv", ["demo", "run", "reservation"])
     module.main()
     assert json.loads((tmp_path / ".runs/attempt-1.json").read_text()) == evidence
+    rows = lambda name: [json.loads(line) for line in (tmp_path / ".runs" / name).read_text().splitlines()]
+    assert rows("attempt-1.vantis.jsonl") == [evidence["mint"], evidence["dispatch"]]
+    assert rows("attempt-1.tourfedia.jsonl") == [evidence["receive"]]
+    assert rows("attempt-1.actions.jsonl") == [evidence["action"]]
     output = capsys.readouterr().out
-    assert "aeg render --root-token-id " + "a" * 64 in output
-    assert str(synthetic_home / "agents/trip-planner/state/telemetry.jsonl") in output
-    assert str(synthetic_home / "agents/booking/state/actions.jsonl") in output
+    assert "aeg render --root-token-id " + evidence["root_token_id"] in output
+    assert str(tmp_path / ".runs/attempt-1.vantis.jsonl") in output and str(tmp_path / ".runs/attempt-1.actions.jsonl") in output
     assert "AEG input mapping:" in output
+
+
+def test_the_installed_renderer_reads_what_run_wrote_and_not_the_raw_sinks(synthetic_home, tmp_path, monkeypatch, capsys):
+    """The sinks hold A2A diagnostics the renderer refuses and only Tourfedia records an action; the files
+    ./demo run writes are what the printed command renders. Runs the real aeg from the test environment."""
+    module = load_demo("demo_render", synthetic_home, monkeypatch)
+    monkeypatch.setattr(module, "REPO", tmp_path)
+    monkeypatch.setattr(module, "renew_expired", lambda agent: False)
+    evidence = chain_evidence("attempt-r")
+    monkeypatch.setattr(module, "compose", lambda *a, **k: json.dumps({"evidence": evidence}) + "\n")
+    monkeypatch.setattr(module.sys, "argv", ["demo", "run", "reservation"])
+    module.main()
+    printed = capsys.readouterr().out.split("Render this attempt locally:\n", 1)[1].splitlines()[0]
+    aeg = Path(sys.executable).with_name("aeg")
+    rendered = subprocess.run([str(aeg), *shlex.split(printed)[1:]], capture_output=True, text=True)
+    assert rendered.returncode == 0, rendered.stderr
+    assert (tmp_path / ".runs/attempt-r.html").stat().st_size > 0
+    # The same chain inside a sidecar sink that also holds the A2A diagnostics is refused as a whole.
+    sink = tmp_path / "telemetry.jsonl"
+    diagnostic = {"timestamp_unix_seconds": 1.0, "event_type": "a2a_egress", "result": "accepted",
+                  "tenant_id": evidence["mint"]["tenant_id"], "actor_spiffe_id": "spiffe://vantis.example/trip-planner"}
+    sink.write_text("".join(json.dumps(row) + "\n" for row in (evidence["mint"], evidence["dispatch"], diagnostic)))
+    refused = subprocess.run([str(aeg), "render", "--root-token-id", evidence["root_token_id"], "--events", str(sink),
+                              "--output", str(tmp_path / "sink.html")], capture_output=True, text=True)
+    assert refused.returncode != 0 and "unsupported sidecar event_type" in refused.stderr
+
+
+def chain_evidence(task):
+    """The evidence line of a run, with chain events shaped like the sidecar's native ones."""
+    # As the sidecar's native events are shaped: the root T0 has no row of its own; the mint row is the
+    # agent's own T1 (parent T0); the dispatch and receive rows are the delegated T2 (parent T1).
+    root, own, token = "a" * 64, "c" * 64, "b" * 64
+    vantis, tourfedia = "tnt-11111111-1111-4111-8111-111111111111", "tnt-22222222-2222-4222-8222-222222222222"
+    sender, booking = "spiffe://vantis.example/trip-planner", "spiffe://tourfedia.example/booking"
+    common = {"timestamp_unix_seconds": 1760000000.0, "result": "success", "root_token_id": root, "task_ref": task}
+    mint = {**common, "event_type": "mint", "token_id": own, "parent_token_id": root, "hop_index": 1, "tenant_id": vantis,
+            "actor_spiffe_id": sender, "caveat_audience": sender, "caveat_predicates": f"action:reserve_travel,task_ref:{task}",
+            "originator_issuer": "https://login.vantis.example"}
+    dispatch = {**common, "event_type": "dispatch", "token_id": token, "parent_token_id": own, "hop_index": 2, "tenant_id": vantis,
+                "actor_spiffe_id": sender, "caveat_audience": booking, "destination": "tourfedia",
+                "caveat_predicates": f"action:reserve_travel,amount_max:8000,originator_reference:PO #4143,task_ref:{task},valid_until:1760001800"}
+    receive = {**common, "event_type": "receive", "token_id": token, "parent_token_id": own, "hop_index": 2, "tenant_id": tourfedia,
+               "actor_spiffe_id": booking, "presenter_spiffe_id": sender, "caveat_audience": booking,
+               "caveat_predicates": dispatch["caveat_predicates"]}
+    decision = {"action": "settle", "settlement_id": "synthetic-" + task,
+                "action_summary": json.dumps({"order": "PO #4143", "amount": 8000, "payment_status": "unpaid"}, sort_keys=True)}
+    action = {"timestamp_unix_seconds": 1760000001.0, "event_type": "action_taken", "tenant_id": tourfedia, "tenant_short": "Tourfedia",
+              "token_id": token, "actor_spiffe_id": booking, "action_summary": decision["action_summary"],
+              "action_payload": {"task_ref": task, "decision": "settle", "agent_decision": decision}}
+    return {"task_ref": task, "root_token_id": root, "token_id": token, "decision": decision, "tourfedia_reply": "held",
+            "mint": mint, "dispatch": dispatch, "receive": receive, "action": action}
 
 
 def test_run_shows_the_client_rows_and_exit_code_when_the_scenario_fails(synthetic_home, tmp_path, monkeypatch, capsys):
@@ -169,7 +226,7 @@ def test_run_recreates_a_renewed_pair_before_the_scenario(synthetic_home, tmp_pa
     module = load_demo("demo_run_renewed", synthetic_home, monkeypatch)
     monkeypatch.setattr(module, "REPO", tmp_path)
     monkeypatch.setattr(module, "renew_expired", lambda agent: agent == "booking")
-    evidence = {"task_ref": "attempt-3", "root_token_id": "a" * 64, "token_id": "b" * 64}
+    evidence = chain_evidence("attempt-3")
     calls = []
 
     def compose(agent, *args, **kwargs):
