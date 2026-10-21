@@ -80,7 +80,9 @@ services:
       - {type: bind, source: "${AAC_AGENT_SHARED_DIR:?}", target: /run/secrets, read_only: true}
       - {type: bind, source: "${AAC_DEMO_VANTIS_STATE:?}", target: /evidence/vantis, read_only: true}
       - {type: bind, source: "${AAC_DEMO_TOURFEDIA_STATE:?}", target: /evidence/tourfedia, read_only: true}
-    extra_hosts: ["host.docker.internal:host-gateway"]
+    # No extra_hosts here: a container that shares another's network namespace
+    # also shares its hosts file, so the agent's host.docker.internal mapping
+    # above reaches the client, and Docker refuses the two options together.
     entrypoint: ["python", "client.py"]
 
 networks:

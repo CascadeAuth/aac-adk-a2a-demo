@@ -45,7 +45,11 @@ def test_independent_mounts_a2a_and_runtime(synthetic_home, agent):
     assert client["/evidence/vantis"]["source"] == env["AAC_DEMO_VANTIS_STATE"] and client["/evidence/vantis"]["read_only"]
     assert client["/evidence/tourfedia"]["source"] == env["AAC_DEMO_TOURFEDIA_STATE"] and client["/evidence/tourfedia"]["read_only"]
     assert services["client"]["environment"]["AAC_DEMO_BOOKING_ID"] == env["AAC_DEMO_BOOKING_ID"]
-    assert services["agent"]["extra_hosts"] == services["client"]["extra_hosts"] == ["host.docker.internal=host-gateway"]
+    assert services["agent"]["extra_hosts"] == ["host.docker.internal=host-gateway"]
+    # The client shares the agent's network namespace and so its hosts file;
+    # Docker refuses extra_hosts together with network_mode: service (the
+    # first live run failed on exactly that).
+    assert "extra_hosts" not in services["client"]
     sidecar = {m["target"]: m for m in services["sidecar"]["volumes"]}
     assert sidecar["/etc/aac/pki"]["source"] == str(folder / "sidecar")
     assert sidecar["/etc/aac/pki"]["read_only"]
