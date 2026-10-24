@@ -76,18 +76,16 @@ def test_unauthenticated_call_never_reaches_the_booking_agent(agent_module, agen
     assert actions(agent_env) == []
 
 
-def test_without_the_interceptor_adks_history_would_be_refused(agent_module, agent_env):
-    async def unstamped(executor_context, a2a_event, adk_event):
-        return a2a_event
-    plain = agent_module.to_a2a(agent_module.booking, rpc_path="a2a/v1", agent_executor_factory=lambda runner:
-                                agent_module.A2aAgentExecutor(runner=runner, config=agent_module.A2aAgentExecutorConfig(
-                                    execute_interceptors=[agent_module.ExecuteInterceptor(after_event=unstamped)])))
-    plain.add_middleware(agent_module.VerifiedContext)
+def test_adks_reply_passes_the_sidecar_rules_as_it_is(agent_module, agent_env):
     body = json.dumps(a2a_request(agent_module)).encode()
-    with TestClient(plain) as client:
+    with TestClient(agent_module.app) as client:
         reply = client.post("/a2a/v1", headers=signed(body), content=body).json()
-    with pytest.raises(AssertionError, match="contextId is required"):
-        sidecar_rules.check_reply(reply, TASK)
+    task = reply["result"]["task"]
+    agent_messages = [m for m in task["history"] if m["role"] == "ROLE_AGENT"]
+    if "message" in task["status"]:
+        agent_messages.append(task["status"]["message"])
+    assert agent_messages and all("contextId" not in m for m in agent_messages)  # ADK's own shape, untouched
+    sidecar_rules.check_reply(reply, TASK)
 
 
 def fake_sidecar(posted, status=200, reply_text="Reservation synthetic-x held for PO #4143."):

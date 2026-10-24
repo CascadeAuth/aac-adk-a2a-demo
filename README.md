@@ -155,16 +155,14 @@ Read the code in this order; each file is short.
    arguments are what the model read from the message; the limit and the
    record come from the message itself, so a model that asks for more than
    the sender allowed cannot raise what Tourfedia holds.
-7. `stamp_context_id`: ADK answers with a completed A2A task whose history
-   holds the model's tool call and the tool's result. The sidecar checks every
-   message in the reply and requires a context id on each; ADK sets it on the
-   task and leaves it off the messages, so this interceptor copies it over
-   before the reply leaves the agent.
-8. Tourfedia's sidecar checks the reply against its profile and returns it to
+7. ADK answers with a completed A2A task whose history holds the model's tool
+   call and the tool's result. ADK sets the context id on the task and leaves
+   it off its own messages; the sidecar accepts that shape as it is.
+   Tourfedia's sidecar checks the reply against its profile and returns it to
    Vantis's sidecar, which returns it to the tool inside the acknowledgement,
    byte for byte. The scripted model's second move says what Tourfedia
    answered.
-9. [agent/client.py](agent/client.py), `run`: the client then reads the
+8. [agent/client.py](agent/client.py), `run`: the client then reads the
    evidence: the `mint` and `dispatch` events Vantis's sidecar wrote, the
    `receive` event Tourfedia's sidecar wrote and the booking agent's action
    record, all correlated by task and root token, and prints them. The

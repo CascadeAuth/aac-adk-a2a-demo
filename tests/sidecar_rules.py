@@ -61,8 +61,9 @@ def check_part(part):
 
 def check_message(message, roles):
     assert isinstance(message, dict), "response message must be an object"
-    for field in ("messageId", "contextId"):
-        assert isinstance(message.get(field), str) and message[field], f"response {field} is required"
+    assert isinstance(message.get("messageId"), str) and message["messageId"], "response messageId is required"
+    if "contextId" in message:
+        assert isinstance(message["contextId"], str) and message["contextId"], "response contextId must be a nonempty string"
     assert message.get("role") in roles, "response message role is invalid"
     assert "referenceTaskIds" not in message, "task references are outside the unary pilot"
     parts = message.get("parts")
