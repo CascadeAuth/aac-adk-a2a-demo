@@ -192,20 +192,11 @@ async def remember_the_order(context):
     return context
 
 
-async def stamp_context_id(executor_context, a2a_event, adk_event):
-    """The sidecar requires a context id on every message in the reply, history included; ADK sets it on the
-    task and leaves it off the messages, so copy the task's onto each message before it is sent."""
-    status = getattr(a2a_event, "status", None)
-    if status is not None and status.HasField("message") and not status.message.context_id:
-        status.message.context_id = a2a_event.context_id
-    return a2a_event
-
-
 def a2a_app(agent: LlmAgent):
     """ADK's A2A server for the agent, reachable only through the sidecar: the pairing signature is checked first."""
     app = to_a2a(agent, rpc_path="a2a/v1", agent_executor_factory=lambda runner: A2aAgentExecutor(
         runner=runner, config=A2aAgentExecutorConfig(execute_interceptors=[
-            ExecuteInterceptor(before_agent=remember_the_order, after_event=stamp_context_id)])))
+            ExecuteInterceptor(before_agent=remember_the_order)])))
     app.add_middleware(VerifiedContext)
     app.add_middleware(InvokeAuthMiddleware, guard=InvokeAuthGuard.from_env(), protected_paths=("/a2a/v1",))
     return app
