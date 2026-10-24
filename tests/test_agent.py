@@ -42,7 +42,7 @@ def test_booking_holds_the_reservation_within_the_sidecars_reply_profile(agent_m
     assert response.status_code == 200
     reply = response.json()
     assert sidecar_rules.check_reply(reply, TASK) == "task TASK_STATE_COMPLETED"
-    # ADK's history carries the model's tool call and the tool's result; every entry has the context id.
+    # ADK's history carries the model's tool call and the tool's result; the agent's entries carry no context id.
     assert len(reply["result"]["task"]["history"]) == 4
     assert agent_module.reply_text(reply) == ("Reservation synthetic-po4143-test held for PO #4143, Austin to Shanghai "
                                               "on 12 May, $8,000, unpaid.")
